@@ -16,9 +16,20 @@ android {
         versionName = "0.0.1"
     }
 
+    signingConfigs {
+        getByName("debug") {
+            storeFile = rootProject.file("keystore/hiyako.keystore")
+            storeType = "pkcs12"
+            storePassword = "hiyako123"
+            keyAlias = "hiyako"
+            keyPassword = "hiyako123"
+        }
+    }
+
     buildTypes {
         release {
             isMinifyEnabled = false
+            signingConfig = signingConfigs.getByName("debug")
         }
     }
 
