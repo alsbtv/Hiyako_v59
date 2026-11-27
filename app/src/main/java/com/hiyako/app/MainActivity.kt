@@ -3,26 +3,33 @@ package com.hiyako.app
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
-import androidx.compose.foundation.background
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.material3.Text
-import androidx.compose.ui.Alignment
+import androidx.compose.material3.Surface
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.unit.sp
+import com.hiyako.app.ui.MainScreen
+import com.hiyako.app.ui.splash.SplashScreen
+import com.hiyako.app.ui.theme.DarkBg
+import com.hiyako.app.ui.theme.HiyakoTheme
+import dagger.hilt.android.AndroidEntryPoint
 
+@AndroidEntryPoint
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContent {
-            Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .background(Color(0xFF282107)),
-                contentAlignment = Alignment.Center
-            ) {
-                Text(text = "Hiyako", color = Color(0xFFDF144B), fontSize = 44.sp)
+            HiyakoTheme {
+                Surface(modifier = Modifier.fillMaxSize(), color = DarkBg) {
+                    var splashFinished by rememberSaveable { mutableStateOf(false) }
+                    if (splashFinished) {
+                        MainScreen()
+                    } else {
+                        SplashScreen(onFinished = { splashFinished = true })
+                    }
+                }
             }
         }
     }
