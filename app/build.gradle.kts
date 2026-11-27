@@ -13,9 +13,19 @@ android {
         applicationId = "com.hiyako.app"
         minSdk = 26
         targetSdk = 34
-        versionCode = 2
-        versionName = "2.1.0"
+        versionCode = 3
+        versionName = "2.2.0"
         vectorDrawables { useSupportLibrary = true }
+    }
+
+    signingConfigs {
+        getByName("debug") {
+            storeFile = rootProject.file("keystore/hiyako.keystore")
+            storeType = "pkcs12"
+            storePassword = "hiyako123"
+            keyAlias = "hiyako"
+            keyPassword = "hiyako123"
+        }
     }
 
     buildTypes {
