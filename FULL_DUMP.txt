@@ -1,0 +1,1560 @@
+########## HIYAKO COMPLETE DUMP - NOTHING EXCLUDED ##########
+DATE: Fri Nov 27 14:44:33 +04 2026
+ROOT: /storage/emulated/0/Android/data/com.androidharness.app/files/workspace/Hiyako_v59
+GIT: 24c8720 feat: phase 2a - keystore signing, palette engine, data layer, store logic, design components
+
+
+===== FILE: ./.github/workflows/build.yml =====
+name: Build APK
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: 8.9
+
+      - name: Ensure signing key (created once, then reused)
+        run: |
+          if [ ! -f keystore/hiyako.keystore ]; then
+            mkdir -p keystore
+            keytool -genkeypair -keystore keystore/hiyako.keystore -storetype PKCS12 \
+              -alias hiyako -keyalg RSA -keysize 2048 -validity 10000 \
+              -storepass hiyako123 -keypass hiyako123 \
+              -dname "CN=Hiyako, O=Hiyako, C=OM"
+            git config user.name "github-actions"
+            git config user.email "github-actions@users.noreply.github.com"
+            git add keystore/hiyako.keystore
+            git commit -m "Add signing key"
+            git push
+          fi
+
+      - name: Build APK
+        run: gradle assembleRelease --stacktrace
+
+      - name: Rename APK
+        run: cp app/build/outputs/apk/release/app-release.apk Hiyako-${{ github.run_number }}.apk
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: hiyako-apk
+          path: Hiyako-${{ github.run_number }}.apk
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: build-${{ github.run_number }}
+          name: Hiyako build ${{ github.run_number }}
+          prerelease: true
+          files: Hiyako-${{ github.run_number }}.apk
+
+===== END: ./.github/workflows/build.yml =====
+
+===== FILE: ./.gitignore =====
+.gradle/
+build/
+local.properties
+.idea/
+*.iml
+
+===== END: ./.gitignore =====
+
+===== FILE: ./app/build.gradle.kts =====
+plugins {
+    alias(libs.plugins.androidApplication)
+    alias(libs.plugins.kotlinAndroid)
+    alias(libs.plugins.hilt)
+    alias(libs.plugins.ksp)
+}
+
+android {
+    namespace = "com.hiyako.app"
+    compileSdk = 34
+
+    defaultConfig {
+        applicationId = "com.hiyako.app"
+        minSdk = 26
+        targetSdk = 34
+        versionCode = 3
+        versionName = "2.2.0"
+        vectorDrawables { useSupportLibrary = true }
+    }
+
+    signingConfigs {
+        getByName("debug") {
+            storeFile = rootProject.file("keystore/hiyako.keystore")
+            storeType = "pkcs12"
+            storePassword = "hiyako123"
+            keyAlias = "hiyako"
+            keyPassword = "hiyako123"
+        }
+    }
+
+    buildTypes {
+        release {
+            signingConfig = signingConfigs.getByName("debug")
+            isMinifyEnabled = false
+        }
+    }
+    compileOptions {
+        sourceCompatibility = JavaVersion.VERSION_17
+        targetCompatibility = JavaVersion.VERSION_17
+    }
+    kotlinOptions { jvmTarget = "17" }
+    buildFeatures { compose = true }
+    composeOptions { kotlinCompilerExtensionVersion = libs.versions.composeCompiler.get() }
+    packaging { resources { excludes += "/META-INF/{AL2.0,LGPL2.1}" } }
+}
+
+dependencies {
+    implementation(libs.core.ktx)
+    implementation(libs.lifecycle.runtime.ktx)
+    implementation(libs.activity.compose)
+    implementation(platform(libs.compose.bom))
+    implementation(libs.compose.ui)
+    implementation(libs.compose.ui.graphics)
+    implementation(libs.compose.ui.tooling.preview)
+    implementation(libs.compose.material3)
+    implementation(libs.compose.material.icons.extended)
+    implementation(libs.navigation.compose)
+    implementation(libs.hilt.android)
+    ksp(libs.hilt.compiler)
+    implementation(libs.hilt.navigation.compose)
+    implementation(libs.datastore.preferences)
+    implementation(libs.okhttp)
+    implementation(libs.jsoup)
+    implementation(libs.coil.compose)
+    implementation(libs.media3.exoplayer)
+    implementation(libs.media3.ui)
+    implementation(libs.lifecycle.viewmodel.compose)
+}
+
+===== END: ./app/build.gradle.kts =====
+
+===== FILE: ./app/src/main/AndroidManifest.xml =====
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+    <uses-permission android:name="android.permission.INTERNET" />
+    <application
+        android:name=".HiyakoApp"
+        android:allowBackup="true"
+        android:icon="@drawable/ic_launcher"
+        android:label="Hiyako"
+        android:supportsRtl="true"
+        android:theme="@android:style/Theme.Material.NoActionBar"
+        android:usesCleartextTraffic="true"
+        tools:targetApi="31">
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:theme="@android:style/Theme.Material.NoActionBar">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+    </application>
+</manifest>
+
+===== END: ./app/src/main/AndroidManifest.xml =====
+
+===== FILE: ./app/src/main/java/com/hiyako/app/HiyakoApp.kt =====
+package com.hiyako.app
+
+import android.app.Application
+import com.hiyako.app.data.Store
+import dagger.hilt.android.HiltAndroidApp
+
+@HiltAndroidApp
+class HiyakoApp : Application() {
+    override fun onCreate() {
+        super.onCreate()
+        Store.init(this)
+    }
+}
+
+===== END: ./app/src/main/java/com/hiyako/app/HiyakoApp.kt =====
+
+===== FILE: ./app/src/main/java/com/hiyako/app/MainActivity.kt =====
+package com.hiyako.app
+
+import android.os.Bundle
+import androidx.activity.ComponentActivity
+import androidx.activity.compose.setContent
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.material3.Surface
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Modifier
+import com.hiyako.app.ui.MainScreen
+import com.hiyako.app.ui.splash.SplashScreen
+import com.hiyako.app.ui.theme.DarkBg
+import com.hiyako.app.ui.theme.HiyakoTheme
+import dagger.hilt.android.AndroidEntryPoint
+
+@AndroidEntryPoint
+class MainActivity : ComponentActivity() {
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        setContent {
+            HiyakoTheme {
+                Surface(modifier = Modifier.fillMaxSize(), color = DarkBg) {
+                    var splashFinished by rememberSaveable { mutableStateOf(false) }
+                    if (splashFinished) {
+                        MainScreen()
+                    } else {
+                        SplashScreen(onFinished = { splashFinished = true })
+                    }
+                }
+            }
+        }
+    }
+}
+
+===== END: ./app/src/main/java/com/hiyako/app/MainActivity.kt =====
+
+===== FILE: ./app/src/main/java/com/hiyako/app/data/Models.kt =====
+package com.hiyako.app.data
+
+enum class WatchStatus { WATCHING, FAVORITE, COMPLETED, PLAN, LATER, DROPPED }
+
+enum class Spoiler { NONE, LOW, MID, HIGH }
+
+data class Anime(
+    val id: String,
+    val title: String,
+    val jp: String,
+    val alt: String,
+    val year: Int,
+    val season: String,
+    val type: String,
+    val status: String,
+    val mal: Double,
+    val al: Double,
+    val votes: Int,
+    val likes: Int,
+    val episodes: Int,
+    val genres: List<String>,
+    val synopsisEn: String,
+    val synopsisAr: String,
+    val studio: String,
+    val country: String,
+    val colorA: Long,
+    val colorB: Long,
+    val motif: String,
+    val dow: Int,
+    val nextEpHours: Long,
+    val adult: Boolean,
+    val dub: Boolean
+)
+
+data class HistoryEntry(val animeId: String, val ep: Int, val posSec: Int, val durSec: Int, val at: Long)
+
+data class Collection(val id: String, val name: String, val ids: List<String>)
+
+data class NewsItem(val id: String, val ar: String, val en: String, val bodyAr: String, val bodyEn: String, val source: String, val hours: Int, val colorA: Long, val colorB: Long)
+
+data class Character(val id: String, val name: String, val jp: String, val animeId: String, val likes: Int, val colorA: Long, val colorB: Long)
+
+data class ChatMsg(val id: Long, val user: Boolean, val text: String, val spoiler: Spoiler, val model: String)
+
+data class OfflineItem(val animeId: String, val ep: Int, val sizeMb: Int, val at: Long)
+
+data class Notif(val id: String, val ar: String, val en: String, val hours: Int, val read: Boolean, val animeId: String?)
+
+===== END: ./app/src/main/java/com/hiyako/app/data/Models.kt =====
+
+===== FILE: ./app/src/main/java/com/hiyako/app/data/Seed.kt =====
+package com.hiyako.app.data
+
+object Seed {
+    val anime = listOf(
+        Anime("frieren", "Sousou no Frieren", "葬送のフリーレン", "Frieren: Beyond Journey's End", 2023, "Fall", "TV", "Completed", 9.25, 9.34, 941000, 256000, 28, listOf("Adventure", "Drama", "Fantasy"), "The elf mage Frieren outlives the hero party and journeys north to understand the humans she once traveled with.", "الساحرة إلف فرييرين تعمّر بعد رفاقها البشريين، فترحل شمالاً لتفهم البشر الذين سافرت معهم يوماً.", "Madhouse", "Japan", 0xFF2E7D5B, 0xFF0F3D3E, "葬送", 5, 0, false, true),
+        Anime("jjk", "Jujutsu Kaisen", "呪術廻戦", "Sorcery Fight", 2020, "Fall", "TV", "Completed", 8.58, 8.6, 306000, 240000, 24, listOf("Action", "Supernatural", "School"), "Yuji Itadori swallows a cursed finger and enters the world of jujutsu sorcerers to fight curses.", "يبتلع يوجي إصبعاً ملعوناً ويدخل عالم سحرة الجوجوتسو لمحاربة اللعنات.", "MAPPA", "Japan", 0xFFB3261E, 0xFF3E1010, "呪術", 6, 0, true, true),
+        Anime("onepiece", "One Piece", "ワンピース", "One Piece", 1999, "Fall", "TV", "On Going", 8.72, 8.7, 1200000, 256000, 1122, listOf("Action", "Adventure", "Comedy"), "Monkey D. Luffy sails the Grand Line with his crew to find the One Piece and become King of the Pirates.", "لوفي يبحر في الغراند لاين مع طاقمه للعثور على ون بيس وليصبح ملك القراصنة.", "Toei", "Japan", 0xFFE65100, 0xFF7A1F00, "海賊", 0, 18, false, true),
+        Anime("aot", "Shingeki no Kyojin", "進撃の巨人", "Attack on Titan", 2013, "Spring", "TV", "Completed", 8.57, 8.5, 3100000, 300000, 25, listOf("Action", "Drama", "Mystery"), "Humanity fights man-eating titans from behind walls, until Eren Yeager vows to exterminate them all.", "البشرية تقاتل العمالقة آكلي البشر خلف الأسوار، حتى يقسم إيرن على إبادتهم جميعاً.", "Wit / MAPPA", "Japan", 0xFF5D4037, 0xFF20120B, "進撃", 6, 0, true, true),
+        Anime("deathnote", "Death Note", "デスノート", "Death Note", 2006, "Fall", "TV", "Completed", 8.62, 8.6, 3000000, 280000, 37, listOf("Mystery", "Psychological", "Supernatural"), "A notebook that kills anyone whose name is written in it falls into the hands of genius Light Yagami.", "دفتر يقتل كل من يكتب اسمه فيه يقع بين يدي العبقري لايت ياغامي.", "Madhouse", "Japan", 0xFF37474F, 0xFF0B0F12, "死神", 2, 0, true, true),
+        Anime("fmab", "Fullmetal Alchemist: Brotherhood", "鋼の錬金術師", "Fullmetal Alchemist: Brotherhood", 2009, "Spring", "TV", "Completed", 9.11, 9.1, 2300000, 243000, 64, listOf("Action", "Adventure", "Drama"), "Two brothers pay a terrible price for forbidden alchemy and search for the Philosopher's Stone.", "أخوان يدفعان ثمناً فادحاً مقابل خيمياء محرمة ويبحثان عن حجر الفلاسفة.", "Bones", "Japan", 0xFFC62828, 0xFF4A0E0E, "鋼", 3, 0, false, true),
+        Anime("hxh", "Hunter x Hunter", "ハンター×ハンター", "Hunter x Hunter", 2011, "Fall", "TV", "Completed", 9.04, 9.0, 1800000, 230000, 148, listOf("Action", "Adventure", "Fantasy"), "Gon Freecss becomes a Hunter to find the father who left him, facing the Chimera Ant threat.", "غون يصبح هنتر ليجد أباه الذي تركه، ويواجه خطر نمل الكيميرا.", "Madhouse", "Japan", 0xFF2E7D32, 0xFF0C2B12, "狩", 4, 0, false, true),
+        Anime("spyfamily", "Spy x Family", "スパイファミリー", "Spy x Family", 2022, "Spring", "TV", "Completed", 8.44, 8.4, 900000, 200000, 25, listOf("Comedy", "Action", "Slice of Life"), "A spy, an assassin and a telepath child form a fake family, each hiding their true identity.", "جاسوس وقاتلة وطفلة قارئة أفكار يشكلون عائلة مزيفة، كل يخفي هويته الحقيقية.", "Wit / CloverWorks", "Japan", 0xFFAD1457, 0xFF33061B, "家族", 6, 0, false, true),
+        Anime("csm", "Chainsaw Man", "チェンソーマン", "Chainsaw Man", 2022, "Fall", "TV", "Completed", 8.47, 8.5, 1100000, 220000, 12, listOf("Action", "Horror", "Supernatural"), "Denji merges with his devil dog Pochita and becomes Chainsaw Man, hunting devils for a normal life.", "دينجي يندمج مع كلبه الشيطاني بوتشيتا ويصبح رجل المنشار، يصطاد الشياطين لحياة طبيعية.", "MAPPA", "Japan", 0xFFD84315, 0xFF3B0D02, "锯", 2, 0, true, true),
+        Anime("demonslayer", "Kimetsu no Yaiba", "鬼滅の刃", "Demon Slayer", 2019, "Spring", "TV", "Completed", 8.45, 8.5, 1500000, 230000, 26, listOf("Action", "Supernatural", "Historical"), "Tanjiro joins the Demon Slayer Corps to cure his sister Nezuko, turned into a demon.", "تانجيرو ينضم لفيلق قتلة الشياطين ليشفي أخته نيزوكو التي تحولت لشيطانة.", "ufotable", "Japan", 0xFF00695C, 0xFF03211D, "鬼滅", 0, 0, false, true),
+        Anime("vinland", "Vinland Saga", "ヴィンランド・サガ", "Vinland Saga", 2019, "Summer", "TV", "Completed", 8.76, 8.8, 800000, 180000, 24, listOf("Action", "Adventure", "Drama"), "Thorfinn grows up among Vikings seeking revenge, then searches for a land without war.", "ثورفين يكبر بين الفايكنغ ساعياً للانتقام، ثم يبحث عن أرض بلا حرب.", "Wit / MAPPA", "Japan", 0xFF455A64, 0xFF101820, "氷", 1, 0, true, true),
+        Anime("bocchi", "Bocchi the Rock!", "ぼっち・ざ・ろっく!", "Bocchi the Rock!", 2022, "Fall", "TV", "Completed", 8.79, 8.8, 400000, 150000, 12, listOf("Comedy", "Music", "Slice of Life"), "Hitori Gotoh, a painfully shy guitarist, joins Kessoku Band and learns to shine on stage.", "هيتوري غوتو، عازفة غيتار خجولة جداً، تنضم لفريق كيسوكو وتتعلم التألق على المسرح.", "CloverWorks", "Japan", 0xFFEC407A, 0xFF4A0D24, "ぼっち", 6, 0, false, true),
+        Anime("bluelock", "Blue Lock", "ブルーロック", "Blue Lock", 2022, "Fall", "TV", "Completed", 8.14, 8.2, 600000, 160000, 24, listOf("Sports", "Drama", "Psychological"), "300 strikers are locked in a facility where only the most egoistic will become Japan's striker.", "ثلاثمئة مهاجم يحبسون في مرفق حيث الأكثر أنانية فقط يصبح مهاجم اليابان.", "8bit", "Japan", 0xFF1565C0, 0xFF04142B, "青", 6, 0, false, true),
+        Anime("apothecary", "Kusuriya no Hitorigoto", "薬屋のひとりごと", "The Apothecary Diaries", 2023, "Fall", "TV", "On Going", 8.6, 8.6, 210000, 140000, 24, listOf("Mystery", "Drama", "Historical"), "Maomao, an apothecary maid in the imperial court, solves poison mysteries with sharp curiosity.", "ماوماو، خادمة صيدلانية في البلاط الإمبراطوري، تحل ألغاز السموم بفضول حاد.", "Toho / OLM", "Japan", 0xFF6A1B9A, 0xFF1D0726, "薬", 5, 26, false, true),
+        Anime("sololeveling", "Ore dake Level Up na Ken", "俺だけレベルアップな件", "Solo Leveling", 2024, "Winter", "TV", "On Going", 8.25, 8.3, 500000, 170000, 12, listOf("Action", "Fantasy", "Adventure"), "The weakest hunter Sung Jinwoo gains a system that lets him level up without limit.", "أضعف هنتر سونغ جينوو يحصل على نظام يتيح له رفع مستواه بلا حدود.", "A-1 Pictures", "Korea", 0xFF4527A0, 0xFF120826, "影", 6, 30, false, true),
+        Anime("cyberpunk", "Cyberpunk: Edgerunners", "サイバーパンク エッジランナーズ", "Cyberpunk: Edgerunners", 2022, "Summer", "ONA", "Completed", 8.38, 8.6, 13000, 120000, 10, listOf("Action", "Sci-Fi", "Drama"), "A street kid in Night City becomes an edgerunner mercenary with chrome implants and nothing to lose.", "فتى شوارع في نايت سيتي يصبح مرتزق إيدجرانر بزرعات كروم ولا شيء يخسره.", "Trigger", "Japan", 0xFFF9A825, 0xFF2B1600, "夜", 3, 0, true, true)
+    )
+
+    val news = listOf(
+        NewsItem("n1", "الإعلان عن موسم ثانٍ لـ Solo Leveling", "Solo Leveling Season 2 announced", "أكد الاستوديو عودة سونغ جينوو في موسم ثانٍ يغطي آرك جزيرة جيجو، مع عرض تشويقي جديد.", "The studio confirmed Sung Jinwoo's return in a second season covering the Jeju Island arc, with a new teaser.", "AniList News", 3, 0xFF4527A0, 0xFF120826),
+        NewsItem("n2", "فرييرين يتصدر استفتاء أفضل أنمي للسنة", "Frieren tops anime of the year poll", "تصدرت Sousou no Frieren استفتاء النقاد بفارق واسع عن المنافسين بفضل إخراجها الهادئ.", "Sousou no Frieren topped the critics poll by a wide margin thanks to its quiet direction.", "MAL News", 9, 0xFF2E7D5B, 0xFF0F3D3E),
+        NewsItem("n3", "ون بيس يدخل آرك إلباف رسمياً", "One Piece enters Elbaf arc", "الفصل الجديد ينقل الطاقم إلى أرض العمالقة إلباف بعد أحداث إيغهيد.", "The new chapter moves the crew to the giants' land Elbaf after Egghead events.", "Shonen Jump", 21, 0xFFE65100, 0xFF7A1F00),
+        NewsItem("n4", "فيلم Chainsaw Man: Reze Arc يحطم شباك التذاكر", "Chainsaw Man Reze Arc film breaks box office", "حقق الفيلم أعلى افتتاحية لسلسلة أفلام الأنمي هذا الموسم في اليابان.", "The film posted the highest opening for an anime film this season in Japan.", "ANN", 30, 0xFFD84315, 0xFF3B0D02),
+        NewsItem("n5", "أزرق السجن: مباراة اليابان تحت 20 تقترب", "Blue Lock U-20 match approaches", "الاستوديو يكشف عن تصميمات الشخصيات الجديدة لمباراة المنتخب.", "The studio revealed new character designs for the national team match.", "AniList News", 44, 0xFF1565C0, 0xFF04142B),
+        NewsItem("n6", "مذكرات الصيدلانية تجدد لموسم ثالث", "Apothecary Diaries renewed for season 3", "إعلان رسمي بموسم ثالث يغطي آرك العاصمة الشمالية.", "Official announcement of a third season covering the northern capital arc.", "MAL News", 60, 0xFF6A1B9A, 0xFF1D0726)
+    )
+
+    val characters = listOf(
+        Character("c1", "Frieren", "フリーレン", "frieren", 98000, 0xFF2E7D5B, 0xFF0F3D3E),
+        Character("c2", "Gojo Satoru", "五条悟", "jjk", 150000, 0xFFB3261E, 0xFF3E1010),
+        Character("c3", "Luffy", "ルフィ", "onepiece", 200000, 0xFFE65100, 0xFF7A1F00),
+        Character("c4", "Levi", "リヴァイ", "aot", 180000, 0xFF5D4037, 0xFF20120B),
+        Character("c5", "L Lawliet", "エル", "deathnote", 160000, 0xFF37474F, 0xFF0B0F12),
+        Character("c6", "Edward Elric", "エドワード", "fmab", 120000, 0xFFC62828, 0xFF4A0E0E),
+        Character("c7", "Killua", "キルア", "hxh", 140000, 0xFF2E7D32, 0xFF0C2B12),
+        Character("c8", "Anya Forger", "アーニャ", "spyfamily", 130000, 0xFFAD1457, 0xFF33061B),
+        Character("c9", "Power", "パワー", "csm", 90000, 0xFFD84315, 0xFF3B0D02),
+        Character("c10", "Nezuko", "禰豆子", "demonslayer", 110000, 0xFF00695C, 0xFF03211D),
+        Character("c11", "Maomao", "猫猫", "apothecary", 85000, 0xFF6A1B9A, 0xFF1D0726),
+        Character("c12", "Hitori Gotoh", "後藤ひとり", "bocchi", 95000, 0xFFEC407A, 0xFF4A0D24)
+    )
+
+    val notifs = listOf(
+        Notif("t1", "حلقة جديدة من One Piece متاحة الآن", "New One Piece episode available now", 2, false, "onepiece"),
+        Notif("t2", "موسم جديد من Apothecary Diaries أعلن", "New Apothecary Diaries season announced", 5, false, "apothecary"),
+        Notif("t3", "خبر عاجل: فيلم Chainsaw Man في السينما", "Breaking: Chainsaw Man film in theaters", 12, false, "csm"),
+        Notif("t4", "حلقة Solo Leveling القادمة بعد 30 ساعة", "Solo Leveling next episode in 30h", 20, true, "sololeveling"),
+        Notif("t5", "تحديث تقييم Frieren على MAL", "Frieren MAL rating updated", 40, true, "frieren")
+    )
+
+    fun anime(id: String): Anime? = anime.firstOrNull { it.id == id }
+}
+
+===== END: ./app/src/main/java/com/hiyako/app/data/Seed.kt =====
+
+===== FILE: ./app/src/main/java/com/hiyako/app/data/Store.kt =====
+package com.hiyako.app.data
+
+import android.content.Context
+import android.content.SharedPreferences
+import kotlinx.coroutines.flow.MutableStateFlow
+
+data class Snack(val msg: String, val undo: (() -> Unit)? = null)
+
+object Store {
+    private lateinit var prefs: SharedPreferences
+
+    val language = MutableStateFlow("ar")
+    val paletteId = MutableStateFlow("hiyako")
+    val profileName = MutableStateFlow("alsb_tv")
+    val avatarIdx = MutableStateFlow(0)
+    val coverIdx = MutableStateFlow(0)
+    val watchlist = MutableStateFlow<Map<String, WatchStatus>>(emptyMap())
+    val history = MutableStateFlow<List<HistoryEntry>>(emptyList())
+    val collections = MutableStateFlow<List<Collection>>(emptyList())
+    val favChars = MutableStateFlow<Set<String>>(emptySet())
+    val recents = MutableStateFlow<List<String>>(emptyList())
+    val offline = MutableStateFlow<List<OfflineItem>>(emptyList())
+    val notifs = MutableStateFlow(Seed.notifs)
+    val chat = MutableStateFlow<List<ChatMsg>>(emptyList())
+    val chatModel = MutableStateFlow("Auto")
+    val spoilerCap = MutableStateFlow(Spoiler.HIGH)
+    val toggles = MutableStateFlow(mapOf("continue" to true, "thumbs" to true, "notifyAll" to false, "adult" to true))
+    val snack = MutableStateFlow<Snack?>(null)
+    val savedArt = MutableStateFlow<Set<String>>(emptySet())
+
+    fun init(ctx: Context) {
+        prefs = ctx.getSharedPreferences("hiyako", Context.MODE_PRIVATE)
+        language.value = prefs.getString("lang", "ar") ?: "ar"
+        paletteId.value = prefs.getString("palette", "hiyako") ?: "hiyako"
+        profileName.value = prefs.getString("name", "alsb_tv") ?: "alsb_tv"
+        avatarIdx.value = prefs.getInt("avatar", 0)
+        coverIdx.value = prefs.getInt("cover", 0)
+        watchlist.value = prefs.getString("wl", "").orEmpty().split(";").filter { it.contains(":") }.associate {
+            val p = it.split(":"); p[0] to WatchStatus.valueOf(p[1])
+        }
+        history.value = prefs.getString("hist", "").orEmpty().split(";").filter { it.count { c -> c == ',' } == 4 }.map {
+            val p = it.split(","); HistoryEntry(p[0], p[1].toInt(), p[2].toInt(), p[3].toInt(), p[4].toLong())
+        }
+        collections.value = prefs.getString("cols", "").orEmpty().split(";").filter { it.contains("|") }.map {
+            val p = it.split("|"); Collection(p[0], p[1], p.getOrElse(2) { "" }.split(",").filter { s -> s.isNotEmpty() })
+        }
+        favChars.value = prefs.getString("favc", "").orEmpty().split(",").filter { it.isNotEmpty() }.toSet()
+        recents.value = prefs.getString("rec", "").orEmpty().split(",").filter { it.isNotEmpty() }
+        offline.value = prefs.getString("off", "").orEmpty().split(";").filter { it.count { c -> c == ',' } == 3 }.map {
+            val p = it.split(","); OfflineItem(p[0], p[1].toInt(), p[2].toInt(), p[3].toLong())
+        }
+        savedArt.value = prefs.getString("art", "").orEmpty().split(",").filter { it.isNotEmpty() }.toSet()
+        toggles.value = toggles.value.mapValues { (k, v) -> prefs.getBoolean("tg_$k", v) }
+    }
+
+    private fun save() {
+        val e = prefs.edit()
+        e.putString("lang", language.value)
+        e.putString("palette", paletteId.value)
+        e.putString("name", profileName.value)
+        e.putInt("avatar", avatarIdx.value)
+        e.putInt("cover", coverIdx.value)
+        e.putString("wl", watchlist.value.entries.joinToString(";") { "${it.key}:${it.value.name}" })
+        e.putString("hist", history.value.joinToString(";") { "${it.animeId},${it.ep},${it.posSec},${it.durSec},${it.at}" })
+        e.putString("cols", collections.value.joinToString(";") { "${it.id}|${it.name}|${it.ids.joinToString(",")}" })
+        e.putString("favc", favChars.value.joinToString(","))
+        e.putString("rec", recents.value.joinToString(","))
+        e.putString("off", offline.value.joinToString(";") { "${it.animeId},${it.ep},${it.sizeMb},${it.at}" })
+        e.putString("art", savedArt.value.joinToString(","))
+        toggles.value.forEach { (k, v) -> e.putBoolean("tg_$k", v) }
+        e.apply()
+    }
+
+    fun setLanguage(v: String) { language.value = v; save() }
+    fun setPalette(v: String) { paletteId.value = v; save() }
+    fun setName(v: String) { profileName.value = v; save() }
+    fun setAvatar(v: Int) { avatarIdx.value = v; save() }
+    fun setCover(v: Int) { coverIdx.value = v; save() }
+    fun setToggle(k: String, v: Boolean) { toggles.value = toggles.value + (k to v); save() }
+
+    fun setStatus(id: String, s: WatchStatus?) {
+        watchlist.value = if (s == null) watchlist.value - id else watchlist.value + (id to s)
+        save()
+    }
+
+    fun recordWatch(id: String, ep: Int, pos: Int, dur: Int) {
+        val entry = HistoryEntry(id, ep, pos, dur, System.currentTimeMillis())
+        history.value = listOf(entry) + history.value.filter { !(it.animeId == id && it.ep == ep) }
+        if (pos >= dur * 95 / 100) {
+            val a = Seed.anime(id)
+            if (a != null && ep >= a.episodes && watchlist.value[id] != WatchStatus.COMPLETED) setStatus(id, WatchStatus.COMPLETED)
+        }
+        save()
+    }
+
+    fun deleteHistory(e: HistoryEntry) {
+        history.value = history.value.filter { it != e }
+        save()
+        snack.value = Snack(deletedMsg()) { history.value = listOf(e) + history.value; save() }
+    }
+
+    fun addCollection(name: String) {
+        collections.value = collections.value + Collection("c${System.currentTimeMillis()}", name, emptyList())
+        save()
+    }
+
+    fun deleteCollection(c: Collection) {
+        collections.value = collections.value.filter { it.id != c.id }
+        save()
+        snack.value = Snack(deletedMsg()) { collections.value = collections.value + c; save() }
+    }
+
+    fun toggleInCollection(colId: String, animeId: String) {
+        collections.value = collections.value.map {
+            if (it.id == colId) it.copy(ids = if (animeId in it.ids) it.ids - animeId else it.ids + animeId) else it
+        }
+        save()
+    }
+
+    fun toggleFavChar(id: String) {
+        favChars.value = if (id in favChars.value) favChars.value - id else favChars.value + id
+        save()
+    }
+
+    fun addRecent(q: String) {
+        if (q.isBlank()) return
+        recents.value = (listOf(q) + recents.value.filter { it != q }).take(12)
+        save()
+    }
+
+    fun removeRecent(q: String) { recents.value = recents.value.filter { it != q }; save() }
+    fun clearRecents() { recents.value = emptyList(); save() }
+
+    fun saveOffline(id: String, ep: Int) {
+        if (offline.value.any { it.animeId == id && it.ep == ep }) return
+        offline.value = listOf(OfflineItem(id, ep, 192, System.currentTimeMillis())) + offline.value
+        save()
+        snack.value = Snack(if (language.value == "ar") "حفظ دون اتصال" else "Saved offline")
+    }
+
+    fun removeOffline(o: OfflineItem) {
+        offline.value = offline.value.filter { it != o }
+        save()
+        snack.value = Snack(deletedMsg()) { offline.value = listOf(o) + offline.value; save() }
+    }
+
+    fun readNotif(id: String) { notifs.value = notifs.value.map { if (it.id == id) it.copy(read = true) else it } }
+    fun readAll() { notifs.value = notifs.value.map { it.copy(read = true) } }
+    fun clearNotifs() {
+        val old = notifs.value
+        notifs.value = emptyList()
+        snack.value = Snack(deletedMsg()) { notifs.value = old }
+    }
+
+    fun pushChat(m: ChatMsg) { chat.value = chat.value + m }
+    fun saveArt(id: String) {
+        savedArt.value = savedArt.value + id
+        save()
+        snack.value = Snack(if (language.value == "ar") "حفظ في المعرض" else "Saved to gallery")
+    }
+
+    fun deletedMsg(): String = if (language.value == "ar") "تم الحذف" else "Deleted"
+    fun clearSnack() { snack.value = null }
+    fun runUndo() { snack.value?.undo?.invoke(); clearSnack() }
+}
+
+===== END: ./app/src/main/java/com/hiyako/app/data/Store.kt =====
+
+===== FILE: ./app/src/main/java/com/hiyako/app/data/Strings.kt =====
+package com.hiyako.app.data
+
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+
+private val en = mapOf(
+    "home" to "Home", "mylist" to "My List", "library" to "Library", "profile" to "Profile",
+    "browse" to "Browse Anime", "search" to "Search", "settings" to "Settings", "news" to "News",
+    "chat" to "SORA AI", "notifications" to "Notifications", "schedule" to "Schedule",
+    "characters" to "Characters", "history" to "Watch History", "downloads" to "Downloads",
+    "continue" to "Continue Watching", "recent" to "Recent Releases", "trending" to "Trending Now",
+    "popular" to "Most Popular", "top" to "Highest Rated", "movies" to "Movies", "viewAll" to "View All",
+    "details" to "Details", "episodes" to "Episodes", "gallery" to "Gallery", "similar" to "More Like This",
+    "play" to "Play Now", "resume" to "Continue", "addList" to "Add to List", "copyOk" to "Title copied",
+    "translate" to "Translate", "empty" to "Nothing here yet", "emptySub" to "Your actions will fill this space",
+    "filters" to "Filters", "apply" to "Apply", "clear" to "Clear All", "sort" to "Sort by",
+    "name" to "Name", "year" to "Year", "rating" to "Rating", "genres" to "Genres",
+    "watching" to "Watching", "favorite" to "Favorite", "completed" to "Completed",
+    "plan" to "Plan to Watch", "later" to "Finish Later", "dropped" to "Dropped",
+    "collections" to "Collections", "newCollection" to "New Collection", "create" to "Create",
+    "delete" to "Delete", "undo" to "Undo", "deleted" to "Deleted", "saved" to "Saved offline",
+    "theme" to "Theme", "language" to "Language", "arabic" to "Arabic", "english" to "English",
+    "stats" to "Activity", "episodesWatched" to "Episodes Watched", "editProfile" to "Edit Profile",
+    "avatar" to "Avatar", "cover" to "Cover", "save" to "Save", "cancel" to "Cancel",
+    "send" to "Send", "model" to "Model", "spoiler" to "Spoiler level", "auto" to "Auto",
+    "none" to "None", "low" to "Low", "mid" to "Medium", "high" to "High",
+    "askHint" to "Ask about any anime...", "readAll" to "Mark all read", "clearAll" to "Clear all",
+    "week" to "This Week", "coming" to "Coming Soon", "seasons" to "Seasons", "dub" to "Dub Releases",
+    "favChars" to "Favorite Characters", "allChars" to "Popular Characters", "storage" to "Storage used",
+    "remove" to "Remove", "player" to "Player", "speed" to "Speed", "nextEp" to "Next episode in",
+    "hours" to "h", "days" to "d", "adult" to "18+ content", "notifyAll" to "Notify all releases",
+    "showContinue" to "Show Continue Watching", "thumbs" to "History thumbnails", "about" to "About",
+    "version" to "Version", "clearRecents" to "Clear recent searches", "recents" to "Recent Searches",
+    "results" to "results", "noResults" to "No matches found", "selected" to "Selected",
+    "random" to "Pick Random Anime", "notified" to "Notified Anime", "offline" to "Offline Mode",
+    "back" to "Back", "close" to "Close", "open" to "Open", "markWatched" to "Mark watched",
+    "inList" to "In your list", "removeList" to "Remove from list", "story" to "Story",
+    "studio" to "Studio", "country" to "Country", "type" to "Type", "status" to "Status",
+    "airing" to "Airing", "finished" to "Finished", "upcomingSt" to "Upcoming", "hiatus" to "Hiatus"
+)
+
+private val ar = mapOf(
+    "home" to "الرئيسية", "mylist" to "قائمتي", "library" to "المكتبة", "profile" to "حسابي",
+    "browse" to "تصفح الأنمي", "search" to "بحث", "settings" to "الإعدادات", "news" to "الأخبار",
+    "chat" to "SORA AI", "notifications" to "الإشعارات", "schedule" to "الجدول",
+    "characters" to "الشخصيات", "history" to "سجل المشاهدة", "downloads" to "التنزيلات",
+    "continue" to "متابعة المشاهدة", "recent" to "أحدث الإصدارات", "trending" to "الرائج الآن",
+    "popular" to "الأكثر شعبية", "top" to "الأعلى تقييماً", "movies" to "أفلام", "viewAll" to "عرض الكل",
+    "details" to "التفاصيل", "episodes" to "الحلقات", "gallery" to "المعرض", "similar" to "أعمال مشابهة",
+    "play" to "شاهد الآن", "resume" to "أكمل", "addList" to "أضف للقائمة", "copyOk" to "تم نسخ الاسم",
+    "translate" to "ترجمة", "empty" to "لا شيء هنا بعد", "emptySub" to "أفعالك ستملأ هذا المكان",
+    "filters" to "الفلاتر", "apply" to "تطبيق", "clear" to "مسح الكل", "sort" to "ترتيب حسب",
+    "name" to "الاسم", "year" to "السنة", "rating" to "التقييم", "genres" to "التصنيفات",
+    "watching" to "أشاهده", "favorite" to "المفضلة", "completed" to "أكملته",
+    "plan" to "أنوي مشاهدته", "later" to "أكمل لاحقاً", "dropped" to "توقف",
+    "collections" to "المجموعات", "newCollection" to "مجموعة جديدة", "create" to "إنشاء",
+    "delete" to "حذف", "undo" to "تراجع", "deleted" to "تم الحذف", "saved" to "حفظ دون اتصال",
+    "theme" to "الثيم", "language" to "اللغة", "arabic" to "العربية", "english" to "الإنجليزية",
+    "stats" to "النشاط", "episodesWatched" to "حلقات شوهدت", "editProfile" to "تعديل الحساب",
+    "avatar" to "الأفاتار", "cover" to "الغلاف", "save" to "حفظ", "cancel" to "إلغاء",
+    "send" to "إرسال", "model" to "النموذج", "spoiler" to "مستوى الحرق", "auto" to "تلقائي",
+    "none" to "بدون", "low" to "بسيط", "mid" to "متوسط", "high" to "كبير",
+    "askHint" to "اسأل عن أي أنمي...", "readAll" to "تحديد الكل مقروء", "clearAll" to "مسح الكل",
+    "week" to "هذا الأسبوع", "coming" to "قريباً", "seasons" to "المواسم", "dub" to "إصدارات مدبلجة",
+    "favChars" to "الشخصيات المفضلة", "allChars" to "الشخصيات الرائجة", "storage" to "المساحة المستخدمة",
+    "remove" to "إزالة", "player" to "المشغل", "speed" to "السرعة", "nextEp" to "الحلقة القادمة بعد",
+    "hours" to "س", "days" to "ي", "adult" to "محتوى +18", "notifyAll" to "إشعارات كل الإصدارات",
+    "showContinue" to "إظهار متابعة المشاهدة", "thumbs" to "مصغرات السجل", "about" to "حول",
+    "version" to "الإصدار", "clearRecents" to "مسح سجل البحث", "recents" to "عمليات البحث الأخيرة",
+    "results" to "نتيجة", "noResults" to "لا توجد نتائج مطابقة", "selected" to "المحدد",
+    "random" to "أنمي عشوائي", "notified" to "أنمي مشعر", "offline" to "وضع دون اتصال",
+    "back" to "رجوع", "close" to "إغلاق", "open" to "فتح", "markWatched" to "تحديد كمشاهد",
+    "inList" to "في قائمتك", "removeList" to "إزالة من القائمة", "story" to "القصة",
+    "studio" to "الاستوديو", "country" to "البلد", "type" to "النوع", "status" to "الحالة",
+    "airing" to "مستمر", "finished" to "منتهي", "upcomingSt" to "قادم", "hiatus" to "متوقف"
+)
+
+@Composable
+fun t(key: String): String {
+    val lang by Store.language.collectAsState()
+    val dict = if (lang == "ar") ar else en
+    return dict[key] ?: en[key] ?: key
+}
+
+===== END: ./app/src/main/java/com/hiyako/app/data/Strings.kt =====
+
+===== FILE: ./app/src/main/java/com/hiyako/app/ui/MainScreen.kt =====
+package com.hiyako.app.ui
+
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Home
+import androidx.compose.material.icons.filled.Notifications
+import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.outlined.Article
+import androidx.compose.material.icons.outlined.BookmarkBorder
+import androidx.compose.material.icons.outlined.CalendarMonth
+import androidx.compose.material.icons.outlined.DateRange
+import androidx.compose.material.icons.outlined.Download
+import androidx.compose.material.icons.outlined.FavoriteBorder
+import androidx.compose.material.icons.outlined.Folder
+import androidx.compose.material.icons.outlined.History
+import androidx.compose.material.icons.outlined.List
+import androidx.compose.material.icons.outlined.Mic
+import androidx.compose.material.icons.outlined.NotificationsActive
+import androidx.compose.material.icons.outlined.People
+import androidx.compose.material.icons.outlined.PlayCircle
+import androidx.compose.material.icons.outlined.Shuffle
+import androidx.compose.material.icons.outlined.SmartToy
+import androidx.compose.material.icons.outlined.TrendingUp
+import androidx.compose.material.icons.outlined.Upcoming
+import androidx.compose.material3.DrawerValue
+import androidx.compose.material3.Icon
+import androidx.compose.material3.ModalDrawerSheet
+import androidx.compose.material3.ModalNavigationDrawer
+import androidx.compose.material3.NavigationBar
+import androidx.compose.material3.NavigationBarItem
+import androidx.compose.material3.NavigationBarItemDefaults
+import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Text
+import androidx.compose.material3.rememberDrawerState
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import androidx.navigation.NavHostController
+import androidx.navigation.compose.currentBackStackEntryAsState
+import androidx.navigation.compose.rememberNavController
+import coil.compose.AsyncImage
+import com.hiyako.app.ui.navigation.HiyakoNavHost
+import com.hiyako.app.ui.navigation.Routes
+import com.hiyako.app.ui.theme.AccentRed
+import com.hiyako.app.ui.theme.DarkBg
+import com.hiyako.app.ui.theme.DrawerBg
+import com.hiyako.app.ui.theme.TextPrimary
+import com.hiyako.app.ui.theme.TextSecondary
+import kotlinx.coroutines.launch
+
+private data class DrawerItem(val label: String, val icon: ImageVector)
+
+private val drawerItems = listOf(
+    DrawerItem("Home", Icons.Filled.Home),
+    DrawerItem("Notifications", Icons.Filled.Notifications),
+    DrawerItem("Search", Icons.Filled.Search),
+    DrawerItem("Pick Random Anime", Icons.Outlined.Shuffle),
+    DrawerItem("News", Icons.Outlined.Article),
+    DrawerItem("SORA AI", Icons.Outlined.SmartToy),
+    DrawerItem("Recent Releases", Icons.Outlined.PlayCircle),
+    DrawerItem("Recent Dub Releases", Icons.Outlined.Mic),
+    DrawerItem("Trending Anime", Icons.Outlined.TrendingUp),
+    DrawerItem("Schedule", Icons.Outlined.DateRange),
+    DrawerItem("Coming Soon", Icons.Outlined.Upcoming),
+    DrawerItem("Library", Icons.Outlined.BookmarkBorder),
+    DrawerItem("Seasons", Icons.Outlined.CalendarMonth),
+    DrawerItem("Popular Characters", Icons.Outlined.People),
+    DrawerItem("Favorite Characters", Icons.Outlined.FavoriteBorder),
+    DrawerItem("Downloads/Offline", Icons.Outlined.Download),
+    DrawerItem("Watch History", Icons.Outlined.History),
+    DrawerItem("My List", Icons.Outlined.List),
+    DrawerItem("Collections", Icons.Outlined.Folder),
+    DrawerItem("Notified Anime", Icons.Outlined.NotificationsActive),
+    DrawerItem("Settings", Icons.Filled.Settings)
+)
+
+private fun NavHostController.navigateToTab(route: String) {
+    navigate(route) {
+        popUpTo(Routes.HOME) { saveState = true }
+        launchSingleTop = true
+        restoreState = true
+    }
+}
+
+@Composable
+fun MainScreen() {
+    val drawerState = rememberDrawerState(DrawerValue.Closed)
+    val scope = rememberCoroutineScope()
+    val navController = rememberNavController()
+    val backStackEntry by navController.currentBackStackEntryAsState()
+    val currentRoute = backStackEntry?.destination?.route ?: Routes.HOME
+
+    ModalNavigationDrawer(
+        drawerState = drawerState,
+        gesturesEnabled = false,
+        drawerContent = {
+            ModalDrawerSheet(drawerContainerColor = DrawerBg, modifier = Modifier.width(300.dp)) {
+                Box(modifier = Modifier.height(200.dp).fillMaxWidth()) {
+                    AsyncImage(
+                        model = "https://images.unsplash.com/photo-1495616811223-4d98c6e9c869?auto=format&fit=crop&w=600&q=80",
+                        contentDescription = "Cover",
+                        contentScale = ContentScale.Crop,
+                        modifier = Modifier.fillMaxSize()
+                    )
+                    Box(
+                        modifier = Modifier.align(Alignment.TopEnd).padding(16.dp).size(32.dp).background(Color.Black.copy(alpha = 0.5f), CircleShape).clickable { scope.launch { drawerState.close() } },
+                        contentAlignment = Alignment.Center
+                    ) { Text("X", color = Color.White, fontSize = 16.sp) }
+                    
+                    Box(modifier = Modifier.align(Alignment.BottomStart).padding(start = 16.dp, bottom = 16.dp)) {
+                        AsyncImage(
+                            model = "https://s4.anilist.co/file/anilistcdn/character/large/b1-1yly1.jpg",
+                            contentDescription = "Avatar",
+                            contentScale = ContentScale.Crop,
+                            modifier = Modifier.size(80.dp).clip(CircleShape).background(Color.White)
+                        )
+                        Box(
+                            modifier = Modifier.align(Alignment.BottomEnd).size(24.dp).background(Color(0xFFFF9800), CircleShape),
+                            contentAlignment = Alignment.Center
+                        ) { Text("✓", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold) }
+                    }
+                    Column(modifier = Modifier.align(Alignment.BottomStart).padding(start = 112.dp, bottom = 28.dp)) {
+                        Text("alsb_tv", color = TextPrimary, fontSize = 20.sp, fontWeight = FontWeight.Bold)
+                        Text("@alsb_tv", color = TextSecondary, fontSize = 14.sp)
+                    }
+                }
+                LazyColumn {
+                    items(drawerItems) { item ->
+                        Row(
+                            modifier = Modifier.fillMaxWidth().clickable { scope.launch { drawerState.close() } }.padding(horizontal = 16.dp, vertical = 12.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(item.icon, contentDescription = item.label, tint = TextPrimary, modifier = Modifier.size(24.dp))
+                            Spacer(modifier = Modifier.width(16.dp))
+                            Text(item.label, color = TextPrimary, fontSize = 16.sp)
+                        }
+                    }
+                }
+            }
+        }
+    ) {
+        Scaffold(
+            containerColor = DarkBg,
+            bottomBar = {
+                NavigationBar(containerColor = DrawerBg, modifier = Modifier.height(64.dp)) {
+                    NavigationBarItem(
+                        selected = currentRoute == Routes.HOME,
+                        onClick = { navController.navigateToTab(Routes.HOME) },
+                        icon = { Icon(Icons.Filled.Home, contentDescription = "Home", tint = if (currentRoute == Routes.HOME) AccentRed else TextSecondary) },
+                        label = { Text("Home", color = if (currentRoute == Routes.HOME) AccentRed else TextSecondary, fontSize = 10.sp) },
+                        colors = NavigationBarItemDefaults.colors(indicatorColor = Color.Transparent)
+                    )
+                    NavigationBarItem(
+                        selected = currentRoute == Routes.LIBRARY,
+                        onClick = { navController.navigateToTab(Routes.LIBRARY) },
+                        icon = { Icon(Icons.Outlined.BookmarkBorder, contentDescription = "Library", tint = if (currentRoute == Routes.LIBRARY) AccentRed else TextSecondary) },
+                        label = { Text("Library", color = if (currentRoute == Routes.LIBRARY) AccentRed else TextSecondary, fontSize = 10.sp) },
+                        colors = NavigationBarItemDefaults.colors(indicatorColor = Color.Transparent)
+                    )
+                    NavigationBarItem(
+                        selected = currentRoute == Routes.PROFILE,
+                        onClick = { navController.navigateToTab(Routes.PROFILE) },
+                        icon = { AsyncImage(model = "https://s4.anilist.co/file/anilistcdn/character/large/b1-1yly1.jpg", contentDescription = "Profile", contentScale = ContentScale.Crop, modifier = Modifier.size(24.dp).clip(CircleShape)) },
+                        label = { Text("Profile", color = if (currentRoute == Routes.PROFILE) AccentRed else TextSecondary, fontSize = 10.sp) },
+                        colors = NavigationBarItemDefaults.colors(indicatorColor = Color.Transparent)
+                    )
+                }
+            }
+        ) { paddingValues ->
+            Box(modifier = Modifier.fillMaxSize().padding(paddingValues)) {
+                HiyakoNavHost(navController = navController, onMenuClick = { scope.launch { drawerState.open() } })
+            }
+        }
+    }
+}
+
+===== END: ./app/src/main/java/com/hiyako/app/ui/MainScreen.kt =====
+
+===== FILE: ./app/src/main/java/com/hiyako/app/ui/components/AppIcons.kt =====
+package com.hiyako.app.ui.components
+
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.*
+
+object AppIcons {
+    val home = Icons.Rounded.Home
+    val myList = Icons.Rounded.Bookmark
+    val library = Icons.Rounded.VideoLibrary
+    val profile = Icons.Rounded.Person
+    val menu = Icons.Rounded.Menu
+    val bell = Icons.Rounded.Notifications
+    val search = Icons.Rounded.Search
+    val settings = Icons.Rounded.Settings
+    val shuffle = Icons.Rounded.Shuffle
+    val news = Icons.Rounded.Article
+    val ai = Icons.Rounded.SmartToy
+    val play = Icons.Rounded.PlayCircle
+    val mic = Icons.Rounded.Mic
+    val trend = Icons.Rounded.TrendingUp
+    val calendar = Icons.Rounded.CalendarMonth
+    val upcoming = Icons.Rounded.Upcoming
+    val people = Icons.Rounded.People
+    val heart = Icons.Rounded.FavoriteBorder
+    val heartFull = Icons.Rounded.Favorite
+    val download = Icons.Rounded.Download
+    val history = Icons.Rounded.History
+    val list = Icons.Rounded.List
+    val folder = Icons.Rounded.Folder
+    val bellActive = Icons.Rounded.NotificationsActive
+    val playArrow = Icons.Rounded.PlayArrow
+    val pause = Icons.Rounded.Pause
+    val close = Icons.Rounded.Close
+    val add = Icons.Rounded.Add
+    val delete = Icons.Rounded.Delete
+    val edit = Icons.Rounded.Edit
+    val check = Icons.Rounded.Check
+    val star = Icons.Rounded.Star
+    val back = Icons.Rounded.ArrowBack
+    val more = Icons.Rounded.MoreVert
+    val translate = Icons.Rounded.Translate
+    val copy = Icons.Rounded.ContentCopy
+    val filter = Icons.Rounded.FilterList
+    val sort = Icons.Rounded.Sort
+    val grid = Icons.Rounded.GridView
+    val next = Icons.Rounded.SkipNext
+    val forward = Icons.Rounded.Forward10
+    val rewind = Icons.Rounded.Replay10
+    val speed = Icons.Rounded.Speed
+    val palette = Icons.Rounded.Palette
+    val language = Icons.Rounded.Language
+    val info = Icons.Rounded.Info
+    val broom = Icons.Rounded.DeleteSweep
+    val send = Icons.Rounded.Send
+    val clock = Icons.Rounded.Schedule
+    val tv = Icons.Rounded.LiveTv
+    val movie = Icons.Rounded.Movie
+    val save = Icons.Rounded.Save
+}
+
+===== END: ./app/src/main/java/com/hiyako/app/ui/components/AppIcons.kt =====
+
+===== FILE: ./app/src/main/java/com/hiyako/app/ui/components/Cards.kt =====
+package com.hiyako.app.ui.components
+
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.Icon
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import com.hiyako.app.data.Anime
+import com.hiyako.app.data.t
+import com.hiyako.app.ui.theme.LocalPalette
+import com.hiyako.app.ui.theme.grad
+
+@Composable
+fun PosterArt(a: Anime, modifier: Modifier = Modifier, variant: Int = 0) {
+    val p = LocalPalette.current
+    Box(modifier.clip(RoundedCornerShape(12.dp)).background(grad(a.colorA, a.colorB))) {
+        Text(
+            a.motif,
+            color = Color.White.copy(alpha = 0.16f),
+            fontSize = 44.sp,
+            fontWeight = FontWeight.Black,
+            modifier = Modifier.align(Alignment.TopEnd).padding(8.dp)
+        )
+        Box(
+            Modifier.align(Alignment.BottomStart).fillMaxWidth().height(56.dp)
+                .background(Brush.verticalGradient(listOf(Color.Transparent, Color.Black.copy(alpha = 0.72f))))
+        )
+        Column(Modifier.align(Alignment.BottomStart).padding(8.dp)) {
+            Text(a.title, color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.Bold, maxLines = 2, overflow = TextOverflow.Ellipsis, lineHeight = 14.sp)
+            Text("${a.type} · ${a.year}", color = Color.White.copy(alpha = 0.7f), fontSize = 9.sp)
+        }
+        if (variant == 1) Box(Modifier.matchParentSize().background(Brush.radialGradient(listOf(Color.White.copy(alpha = 0.14f), Color.Transparent))))
+        if (variant == 2) Box(Modifier.matchParentSize().border(1.dp, Brush.linearGradient(listOf(p.accent.copy(alpha = 0.6f), Color.Transparent)), RoundedCornerShape(12.dp)))
+    }
+}
+
+@Composable
+fun StatusBadge(status: String, small: Boolean = false, modifier: Modifier = Modifier) {
+    val (bg, label) = when (status) {
+        "On Going" -> Color(0xFF2E7D32) to t("airing")
+        "Completed" -> Color(0xFFC62828) to t("finished")
+        "Upcoming" -> Color(0xFF1565C0) to t("upcomingSt")
+        else -> Color(0xFF6D4C41) to t("hiatus")
+    }
+    Text(
+        label, color = Color.White, fontSize = if (small) 8.sp else 9.sp, fontWeight = FontWeight.Bold,
+        modifier = modifier.clip(RoundedCornerShape(6.dp)).background(bg).padding(horizontal = 6.dp, vertical = 2.dp)
+    )
+}
+
+@Composable
+fun AnimeCard(a: Anime, onClick: () -> Unit, onMore: () -> Unit, modifier: Modifier = Modifier) {
+    val p = LocalPalette.current
+    Column(modifier.width(130.dp).clickable(onClick = onClick)) {
+        Box(Modifier.fillMaxWidth().aspectRatio(130f / 180f)) {
+            PosterArt(a, Modifier.matchParentSize())
+            StatusBadge(a.status, true, Modifier.align(Alignment.TopStart).padding(6.dp))
+            if (a.adult) Text(
+                "+17", color = Color.White, fontSize = 8.sp, fontWeight = FontWeight.Bold,
+                modifier = Modifier.align(Alignment.TopEnd).padding(6.dp).clip(RoundedCornerShape(6.dp)).background(p.danger).padding(horizontal = 5.dp, vertical = 2.dp)
+            )
+            Box(
+                Modifier.align(Alignment.BottomEnd).padding(6.dp).size(22.dp).clip(RoundedCornerShape(6.dp))
+                    .background(Color.Black.copy(alpha = 0.6f)).clickable(onClick = onMore),
+                contentAlignment = Alignment.Center
+            ) { Icon(AppIcons.more, null, tint = Color.White, modifier = Modifier.size(14.dp)) }
+        }
+        Spacer(Modifier.height(6.dp))
+        Text(a.title, color = p.text, fontSize = 12.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Icon(AppIcons.star, null, tint = Color(0xFFFFC107), modifier = Modifier.size(12.dp))
+            Spacer(Modifier.width(3.dp))
+            Text("${a.mal}", color = p.textDim, fontSize = 10.sp)
+            Spacer(Modifier.width(4.dp))
+            Text("(${a.votes / 1000}K)", color = p.textDim.copy(alpha = 0.7f), fontSize = 9.sp)
+        }
+    }
+}
+
+@Composable
+fun ContinueCard(a: Anime, ep: Int, total: Int, progress: Float, ago: String, onClick: () -> Unit) {
+    val p = LocalPalette.current
+    Column(Modifier.width(180.dp).clickable(onClick = onClick)) {
+        Box(Modifier.fillMaxWidth().aspectRatio(16f / 9f).clip(RoundedCornerShape(10.dp)).background(grad(a.colorA, a.colorB))) {
+            Text(a.motif, color = Color.White.copy(alpha = 0.2f), fontSize = 26.sp, fontWeight = FontWeight.Black, modifier = Modifier.align(Alignment.Center))
+            Text(
+                "Episode $ep /$total", color = Color.White, fontSize = 9.sp, fontWeight = FontWeight.Bold,
+                modifier = Modifier.align(Alignment.TopStart).padding(6.dp).clip(RoundedCornerShape(6.dp)).background(Color.Black.copy(alpha = 0.6f)).padding(horizontal = 6.dp, vertical = 2.dp)
+            )
+            Box(Modifier.align(Alignment.BottomStart).fillMaxWidth().height(3.dp).background(Color.White.copy(alpha = 0.25f))) {
+                Box(Modifier.fillMaxHeight().fillMaxWidth(progress.coerceIn(0f, 1f)).background(p.ok))
+            }
+        }
+        Spacer(Modifier.height(5.dp))
+        Text(a.title, color = p.text, fontSize = 12.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        Text(ago, color = p.textDim, fontSize = 10.sp)
+    }
+}
+
+@Composable
+fun SectionHeader(title: String, onMore: (() -> Unit)? = null) {
+    val p = LocalPalette.current
+    Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
+        Box(Modifier.width(3.dp).height(16.dp).clip(CircleShape).background(p.accent))
+        Spacer(Modifier.width(8.dp))
+        Text(title, color = p.text, fontSize = 16.sp, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
+        if (onMore != null) Text(t("viewAll"), color = p.accent, fontSize = 12.sp, fontWeight = FontWeight.SemiBold, modifier = Modifier.clickable(onClick = onMore))
+    }
+}
+
+@Composable
+fun ShimmerBox(modifier: Modifier = Modifier) {
+    val tr = rememberInfiniteTransition(label = "sh")
+    val x by tr.animateFloat(-400f, 900f, infiniteRepeatable(tween(1100, easing = LinearEasing), RepeatMode.Restart), label = "shx")
+    Box(
+        modifier.clip(RoundedCornerShape(12.dp)).background(
+            Brush.linearGradient(listOf(Color(0xFF1A1D22), Color(0xFF2A2F36), Color(0xFF1A1D22)), start = Offset(x, 0f), end = Offset(x + 400f, 0f))
+        )
+    )
+}
+
+@Composable
+fun EmptyState(modifier: Modifier = Modifier) {
+    val p = LocalPalette.current
+    Column(modifier.fillMaxWidth().padding(32.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+        Box(Modifier.size(72.dp).clip(CircleShape).background(grad(p.accentL, p.accent2L)), contentAlignment = Alignment.Center) {
+            Icon(AppIcons.tv, null, tint = Color.White, modifier = Modifier.size(32.dp))
+        }
+        Spacer(Modifier.height(14.dp))
+        Text(t("empty"), color = p.text, fontSize = 15.sp, fontWeight = FontWeight.Bold)
+        Spacer(Modifier.height(4.dp))
+        Text(t("emptySub"), color = p.textDim, fontSize = 12.sp)
+    }
+}
+
+@Composable
+fun GlassSurface(modifier: Modifier = Modifier, content: @Composable () -> Unit) {
+    val p = LocalPalette.current
+    Box(
+        modifier.clip(RoundedCornerShape(16.dp))
+            .background(p.surface.copy(alpha = 0.72f))
+            .border(1.dp, Brush.linearGradient(listOf(p.text.copy(alpha = 0.14f), p.accent.copy(alpha = 0.18f), Color.Transparent)), RoundedCornerShape(16.dp))
+            .padding(14.dp)
+    ) { content() }
+}
+
+===== END: ./app/src/main/java/com/hiyako/app/ui/components/Cards.kt =====
+
+===== FILE: ./app/src/main/java/com/hiyako/app/ui/components/Hero.kt =====
+package com.hiyako.app.ui.components
+
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.pager.rememberPagerState
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import com.hiyako.app.data.Anime
+import com.hiyako.app.ui.theme.LocalPalette
+import com.hiyako.app.ui.theme.grad
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+
+@Composable
+fun HeroCarousel(items: List<Anime>, onOpen: (Anime) -> Unit) {
+    if (items.isEmpty()) return
+    val p = LocalPalette.current
+    val scope = rememberCoroutineScope()
+    val state = rememberPagerState(pageCount = { items.size })
+    LaunchedEffect(items.size) {
+        while (true) {
+            delay(11000)
+            state.animateScrollToPage((state.currentPage + 1) % items.size)
+        }
+    }
+    Column {
+        HorizontalPager(
+            state = state,
+            contentPadding = PaddingValues(horizontal = 26.dp),
+            pageSpacing = 12.dp,
+            modifier = Modifier.fillMaxWidth().height(190.dp)
+        ) { page ->
+            val a = items[page]
+            Box(Modifier.fillMaxSize().clip(RoundedCornerShape(18.dp)).background(grad(a.colorA, a.colorB)).clickable { onOpen(a) }) {
+                Text(a.motif, color = Color.White.copy(alpha = 0.14f), fontSize = 84.sp, fontWeight = FontWeight.Black, modifier = Modifier.align(Alignment.TopEnd).padding(12.dp))
+                Box(Modifier.align(Alignment.BottomStart).fillMaxWidth().height(96.dp).background(Brush.verticalGradient(listOf(Color.Transparent, Color.Black.copy(alpha = 0.85f)))))
+                Column(Modifier.align(Alignment.BottomStart).padding(14.dp)) {
+                    Text(a.title, color = Color.White, fontSize = 18.sp, fontWeight = FontWeight.Black, maxLines = 1)
+                    Text("${a.type} · ${a.year}", color = Color.White.copy(alpha = 0.8f), fontSize = 12.sp)
+                }
+                Box(Modifier.align(Alignment.TopStart).padding(12.dp).clip(RoundedCornerShape(8.dp)).background(p.accent).padding(horizontal = 8.dp, vertical = 3.dp)) {
+                    Text(a.status, color = Color.White, fontSize = 9.sp, fontWeight = FontWeight.Bold)
+                }
+            }
+        }
+        Spacer(Modifier.height(10.dp))
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Center) {
+            repeat(items.size) { i ->
+                val active = state.currentPage == i
+                Box(
+                    Modifier.padding(horizontal = 3.dp).height(6.dp).width(if (active) 20.dp else 6.dp)
+                        .clip(CircleShape).background(if (active) p.accent else p.textDim.copy(alpha = 0.4f))
+                        .clickable { scope.launch { state.animateScrollToPage(i) } }
+                )
+            }
+        }
+    }
+}
+
+===== END: ./app/src/main/java/com/hiyako/app/ui/components/Hero.kt =====
+
+===== FILE: ./app/src/main/java/com/hiyako/app/ui/navigation/HiyakoNavHost.kt =====
+package com.hiyako.app.ui.navigation
+
+import androidx.compose.runtime.Composable
+import androidx.navigation.NavHostController
+import androidx.navigation.compose.NavHost
+import androidx.navigation.compose.composable
+import com.hiyako.app.ui.screens.HomeScreen
+import com.hiyako.app.ui.screens.LibraryScreen
+import com.hiyako.app.ui.screens.ProfileScreen
+
+@Composable
+fun HiyakoNavHost(navController: NavHostController, onMenuClick: () -> Unit) {
+    NavHost(navController = navController, startDestination = Routes.HOME) {
+        composable(Routes.HOME) { HomeScreen(onMenuClick = onMenuClick) }
+        composable(Routes.LIBRARY) { LibraryScreen() }
+        composable(Routes.PROFILE) { ProfileScreen() }
+    }
+}
+
+===== END: ./app/src/main/java/com/hiyako/app/ui/navigation/HiyakoNavHost.kt =====
+
+===== FILE: ./app/src/main/java/com/hiyako/app/ui/navigation/Routes.kt =====
+package com.hiyako.app.ui.navigation
+
+object Routes {
+    const val HOME = "home"
+    const val LIBRARY = "library"
+    const val PROFILE = "profile"
+}
+
+===== END: ./app/src/main/java/com/hiyako/app/ui/navigation/Routes.kt =====
+
+===== FILE: ./app/src/main/java/com/hiyako/app/ui/screens/HomeScreen.kt =====
+package com.hiyako.app.ui.screens
+
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.padding
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Menu
+import androidx.compose.material.icons.filled.Notifications
+import androidx.compose.material.icons.filled.Search
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import com.hiyako.app.ui.theme.TextSecondary
+
+@Composable
+fun HomeScreen(onMenuClick: () -> Unit) {
+    Column(modifier = Modifier.fillMaxSize()) {
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(top = 24.dp, start = 16.dp, end = 16.dp, bottom = 8.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            IconButton(onClick = onMenuClick) {
+                Icon(Icons.Filled.Menu, contentDescription = "Menu", tint = TextSecondary)
+            }
+            Text("Browse Anime", color = TextSecondary, fontSize = 18.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(start = 8.dp))
+            Spacer(modifier = Modifier.weight(1f))
+            IconButton(onClick = { }) { Icon(Icons.Filled.Notifications, contentDescription = "Alerts", tint = TextSecondary) }
+            IconButton(onClick = { }) { Icon(Icons.Filled.Search, contentDescription = "Search", tint = TextSecondary) }
+        }
+        Box(modifier = Modifier.fillMaxWidth().weight(1f), contentAlignment = Alignment.Center) {
+            Text("Home content goes here...", color = TextSecondary)
+        }
+    }
+}
+
+===== END: ./app/src/main/java/com/hiyako/app/ui/screens/HomeScreen.kt =====
+
+===== FILE: ./app/src/main/java/com/hiyako/app/ui/screens/LibraryScreen.kt =====
+package com.hiyako.app.ui.screens
+
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import com.hiyako.app.ui.theme.TextSecondary
+
+@Composable
+fun LibraryScreen() {
+    Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+        Text("Library content goes here...", color = TextSecondary)
+    }
+}
+
+===== END: ./app/src/main/java/com/hiyako/app/ui/screens/LibraryScreen.kt =====
+
+===== FILE: ./app/src/main/java/com/hiyako/app/ui/screens/ProfileScreen.kt =====
+package com.hiyako.app.ui.screens
+
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import com.hiyako.app.ui.theme.TextSecondary
+
+@Composable
+fun ProfileScreen() {
+    Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+        Text("Profile content goes here...", color = TextSecondary)
+    }
+}
+
+===== END: ./app/src/main/java/com/hiyako/app/ui/screens/ProfileScreen.kt =====
+
+===== FILE: ./app/src/main/java/com/hiyako/app/ui/splash/SplashScreen.kt =====
+package com.hiyako.app.ui.splash
+
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.size
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.draw.scale
+import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import com.hiyako.app.R
+import com.hiyako.app.ui.theme.AccentRed
+import com.hiyako.app.ui.theme.DarkBg
+import kotlinx.coroutines.delay
+
+@Composable
+fun SplashScreen(onFinished: () -> Unit) {
+    var visible by remember { mutableStateOf(false) }
+    val alpha by animateFloatAsState(if (visible) 1f else 0f, tween(600), label = "splashAlpha")
+    val scale by animateFloatAsState(if (visible) 1f else 0.85f, tween(600), label = "splashScale")
+    LaunchedEffect(Unit) {
+        visible = true
+        delay(1800)
+        onFinished()
+    }
+    Column(
+        modifier = Modifier.fillMaxSize().background(DarkBg),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center
+    ) {
+        Image(
+            painter = painterResource(id = R.drawable.ic_launcher),
+            contentDescription = "Hiyako Logo",
+            modifier = Modifier.size(120.dp).alpha(alpha).scale(scale)
+        )
+        Text(
+            text = "Hiyako",
+            color = AccentRed,
+            fontSize = 34.sp,
+            fontWeight = FontWeight.Bold,
+            modifier = Modifier.alpha(alpha)
+        )
+    }
+}
+
+===== END: ./app/src/main/java/com/hiyako/app/ui/splash/SplashScreen.kt =====
+
+===== FILE: ./app/src/main/java/com/hiyako/app/ui/theme/Color.kt =====
+package com.hiyako.app.ui.theme
+
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
+
+data class Palette(
+    val id: String,
+    val nameAr: String,
+    val nameEn: String,
+    val bg: Color,
+    val surface: Color,
+    val drawer: Color,
+    val accent: Color,
+    val accent2: Color,
+    val text: Color,
+    val textDim: Color,
+    val ok: Color,
+    val warn: Color,
+    val danger: Color,
+    val bgL: Long,
+    val surfaceL: Long,
+    val accentL: Long,
+    val accent2L: Long
+)
+
+val Palettes = listOf(
+    Palette("hiyako", "نيون هياكو", "Hiyako Neon", Color(0xFF0F1115), Color(0xFF1E1E1E), Color(0xFF0A0A0A), Color(0xFFE50046), Color(0xFF4FC3F7), Color(0xFFFFFFFF), Color(0xFF8899A6), Color(0xFF4CAF50), Color(0xFFFFB300), Color(0xFFFF5252), 0xFF0F1115, 0xFF1E1E1E, 0xFFE50046, 0xFF4FC3F7),
+    Palette("sakura", "ساكورا ليل", "Sakura Night", Color(0xFF140F16), Color(0xFF241A26), Color(0xFF0D0A0E), Color(0xFFFF4D8D), Color(0xFFB388FF), Color(0xFFFDF7FF), Color(0xFFA893B2), Color(0xFF69F0AE), Color(0xFFFFD54F), Color(0xFFFF6E6E), 0xFF140F16, 0xFF241A26, 0xFFFF4D8D, 0xFFB388FF),
+    Palette("ocean", "عمق المحيط", "Ocean Depth", Color(0xFF08131A), Color(0xFF12222D), Color(0xFF050D12), Color(0xFF00E5FF), Color(0xFF7C4DFF), Color(0xFFF2FBFF), Color(0xFF7FA3B5), Color(0xFF69F0AE), Color(0xFFFFC400), Color(0xFFFF5C7A), 0xFF08131A, 0xFF12222D, 0xFF00E5FF, 0xFF7C4DFF),
+    Palette("ember", "جمرة الغروب", "Ember Dusk", Color(0xFF170F0B), Color(0xFF2A1C14), Color(0xFF100A07), Color(0xFFFF6D00), Color(0xFFFFD740), Color(0xFFFFF8F2), Color(0xFFB59C8A), Color(0xFF9CCC65), Color(0xFFFFAB40), Color(0xFFFF5252), 0xFF170F0B, 0xFF2A1C14, 0xFFFF6D00, 0xFFFFD740),
+    Palette("mint", "نعناع الليل", "Night Mint", Color(0xFF0B1512), Color(0xFF16241F), Color(0xFF071009), Color(0xFF00E676), Color(0xFF18FFFF), Color(0xFFF4FFF9), Color(0xFF8AA79B), Color(0xFF69F0AE), Color(0xFFFFD740), Color(0xFFFF6E6E), 0xFF0B1512, 0xFF16241F, 0xFF00E676, 0xFF18FFFF)
+)
+
+fun grad(a: Long, b: Long): Brush = Brush.linearGradient(listOf(Color(a), Color(b)))
+
+val DarkBg = Color(0xFF0F1115)
+val CardSurface = Color(0xFF1E1E1E)
+val DrawerBg = Color(0xFF0A0A0A)
+val TextPrimary = Color(0xFFFFFFFF)
+val TextSecondary = Color(0xFF8899A6)
+val AccentRed = Color(0xFFE50046)
+val AccentGreen = Color(0xFF4CAF50)
+val MalBlue = Color(0xFF2E51A2)
+
+===== END: ./app/src/main/java/com/hiyako/app/ui/theme/Color.kt =====
+
+===== FILE: ./app/src/main/java/com/hiyako/app/ui/theme/Theme.kt =====
+package com.hiyako.app.ui.theme
+
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Typography
+import androidx.compose.material3.darkColorScheme
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.staticCompositionLocalOf
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.sp
+import com.hiyako.app.data.Store
+
+val LocalPalette = staticCompositionLocalOf { Palettes.first() }
+
+private val HiyakoTypography = Typography(
+    displaySmall = TextStyle(fontFamily = FontFamily.Default, fontWeight = FontWeight.Black, fontSize = 30.sp, letterSpacing = (-0.5).sp),
+    headlineMedium = TextStyle(fontFamily = FontFamily.Default, fontWeight = FontWeight.Bold, fontSize = 24.sp),
+    titleLarge = TextStyle(fontFamily = FontFamily.Default, fontWeight = FontWeight.Bold, fontSize = 19.sp),
+    titleMedium = TextStyle(fontFamily = FontFamily.Default, fontWeight = FontWeight.SemiBold, fontSize = 16.sp),
+    bodyLarge = TextStyle(fontFamily = FontFamily.Default, fontWeight = FontWeight.Normal, fontSize = 15.sp, lineHeight = 23.sp),
+    bodyMedium = TextStyle(fontFamily = FontFamily.Default, fontWeight = FontWeight.Normal, fontSize = 13.sp, lineHeight = 20.sp),
+    labelLarge = TextStyle(fontFamily = FontFamily.Default, fontWeight = FontWeight.SemiBold, fontSize = 13.sp),
+    labelSmall = TextStyle(fontFamily = FontFamily.Default, fontWeight = FontWeight.Medium, fontSize = 11.sp)
+)
+
+@Composable
+fun HiyakoTheme(content: @Composable () -> Unit) {
+    val paletteId by Store.paletteId.collectAsState()
+    val palette = Palettes.firstOrNull { it.id == paletteId } ?: Palettes.first()
+    CompositionLocalProvider(LocalPalette provides palette) {
+        MaterialTheme(
+            colorScheme = darkColorScheme(
+                primary = palette.accent,
+                onPrimary = palette.bg,
+                secondary = palette.accent2,
+                background = palette.bg,
+                onBackground = palette.text,
+                surface = palette.surface,
+                onSurface = palette.text,
+                surfaceVariant = palette.surface,
+                onSurfaceVariant = palette.textDim,
+                outline = palette.textDim,
+                error = palette.danger
+            ),
+            typography = HiyakoTypography,
+            content = content
+        )
+    }
+}
+
+===== END: ./app/src/main/java/com/hiyako/app/ui/theme/Theme.kt =====
+
+===== FILE: ./app/src/main/res/drawable/ic_launcher.xml =====
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <path android:fillColor="#E50046" android:pathData="M0,0h108v108h-108z" />
+    <path android:fillColor="#FFFFFF" android:pathData="M36,36 L72,54 L36,72 Z" />
+</vector>
+
+===== END: ./app/src/main/res/drawable/ic_launcher.xml =====
+
+===== FILE: ./app/src/main/res/values/themes.xml =====
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="Theme.Hiyako" parent="android:Theme.Material.NoActionBar" />
+</resources>
+
+===== END: ./app/src/main/res/values/themes.xml =====
+
+===== FILE: ./build.gradle.kts =====
+plugins {
+    alias(libs.plugins.androidApplication) apply false
+    alias(libs.plugins.kotlinAndroid) apply false
+    alias(libs.plugins.hilt) apply false
+    alias(libs.plugins.ksp) apply false
+}
+
+===== END: ./build.gradle.kts =====
+
+===== FILE: ./gradle.properties =====
+org.gradle.jvmargs=-Xmx2g -Dfile.encoding=UTF-8
+android.useAndroidX=true
+android.nonTransitiveRClass=true
+kotlin.code.style=official
+
+===== END: ./gradle.properties =====
+
+===== FILE: ./gradle/libs.versions.toml =====
+[versions]
+agp = "8.2.2"
+kotlin = "1.9.22"
+ksp = "1.9.22-1.0.17"
+hilt = "2.50"
+coreKtx = "1.12.0"
+lifecycle = "2.7.0"
+activityCompose = "1.8.2"
+composeBom = "2024.02.00"
+composeCompiler = "1.5.8"
+navigationCompose = "2.7.7"
+hiltNavigationCompose = "1.2.0"
+datastore = "1.1.1"
+okhttp = "4.12.0"
+jsoup = "1.17.2"
+coil = "2.5.0"
+media3 = "1.2.1"
+
+[libraries]
+core-ktx = { module = "androidx.core:core-ktx", version.ref = "coreKtx" }
+lifecycle-runtime-ktx = { module = "androidx.lifecycle:lifecycle-runtime-ktx", version.ref = "lifecycle" }
+lifecycle-viewmodel-compose = { module = "androidx.lifecycle:lifecycle-viewmodel-compose", version.ref = "lifecycle" }
+activity-compose = { module = "androidx.activity:activity-compose", version.ref = "activityCompose" }
+compose-bom = { module = "androidx.compose:compose-bom", version.ref = "composeBom" }
+compose-ui = { module = "androidx.compose.ui:ui" }
+compose-ui-graphics = { module = "androidx.compose.ui:ui-graphics" }
+compose-ui-tooling-preview = { module = "androidx.compose.ui:ui-tooling-preview" }
+compose-material3 = { module = "androidx.compose.material3:material3" }
+compose-material-icons-extended = { module = "androidx.compose.material:material-icons-extended" }
+navigation-compose = { module = "androidx.navigation:navigation-compose", version.ref = "navigationCompose" }
+hilt-android = { module = "com.google.dagger:hilt-android", version.ref = "hilt" }
+hilt-compiler = { module = "com.google.dagger:hilt-android-compiler", version.ref = "hilt" }
+hilt-navigation-compose = { module = "androidx.hilt:hilt-navigation-compose", version.ref = "hiltNavigationCompose" }
+datastore-preferences = { module = "androidx.datastore:datastore-preferences", version.ref = "datastore" }
+okhttp = { module = "com.squareup.okhttp3:okhttp", version.ref = "okhttp" }
+jsoup = { module = "org.jsoup:jsoup", version.ref = "jsoup" }
+coil-compose = { module = "io.coil-kt:coil-compose", version.ref = "coil" }
+media3-exoplayer = { module = "androidx.media3:media3-exoplayer", version.ref = "media3" }
+media3-ui = { module = "androidx.media3:media3-ui", version.ref = "media3" }
+
+[plugins]
+androidApplication = { id = "com.android.application", version.ref = "agp" }
+kotlinAndroid = { id = "org.jetbrains.kotlin.android", version.ref = "kotlin" }
+hilt = { id = "com.google.dagger.hilt.android", version.ref = "hilt" }
+ksp = { id = "com.google.devtools.ksp", version.ref = "ksp" }
+
+===== END: ./gradle/libs.versions.toml =====
+
+===== FILE: ./keystore/hiyako.keystore =====
+[BINARY - size: 2616 bytes]
+----- BEGIN BASE64 -----
+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
+----- END BASE64 -----
+
+===== END: ./keystore/hiyako.keystore =====
+
+===== FILE: ./settings.gradle.kts =====
+pluginManagement {
+    repositories {
+        google()
+        mavenCentral()
+        gradlePluginPortal()
+    }
+}
+dependencyResolutionManagement {
+    repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+    repositories {
+        google()
+        mavenCentral()
+    }
+}
+rootProject.name = "Hiyako"
+include(":app")
+
+===== END: ./settings.gradle.kts =====
+
+########## END OF COMPLETE DUMP ##########

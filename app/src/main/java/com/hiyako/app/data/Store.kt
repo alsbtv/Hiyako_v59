@@ -18,6 +18,7 @@ object Store {
     val history = MutableStateFlow<List<HistoryEntry>>(emptyList())
     val collections = MutableStateFlow<List<Collection>>(emptyList())
     val favChars = MutableStateFlow<Set<String>>(emptySet())
+    val favEps = MutableStateFlow<Set<String>>(emptySet())
     val recents = MutableStateFlow<List<String>>(emptyList())
     val offline = MutableStateFlow<List<OfflineItem>>(emptyList())
     val notifs = MutableStateFlow(Seed.notifs)
@@ -45,6 +46,7 @@ object Store {
             val p = it.split("|"); Collection(p[0], p[1], p.getOrElse(2) { "" }.split(",").filter { s -> s.isNotEmpty() })
         }
         favChars.value = prefs.getString("favc", "").orEmpty().split(",").filter { it.isNotEmpty() }.toSet()
+        favEps.value = prefs.getString("fep", "").orEmpty().split(",").filter { it.isNotEmpty() }.toSet()
         recents.value = prefs.getString("rec", "").orEmpty().split(",").filter { it.isNotEmpty() }
         offline.value = prefs.getString("off", "").orEmpty().split(";").filter { it.count { c -> c == ',' } == 3 }.map {
             val p = it.split(","); OfflineItem(p[0], p[1].toInt(), p[2].toInt(), p[3].toLong())
@@ -64,6 +66,7 @@ object Store {
         e.putString("hist", history.value.joinToString(";") { "${it.animeId},${it.ep},${it.posSec},${it.durSec},${it.at}" })
         e.putString("cols", collections.value.joinToString(";") { "${it.id}|${it.name}|${it.ids.joinToString(",")}" })
         e.putString("favc", favChars.value.joinToString(","))
+        e.putString("fep", favEps.value.joinToString(","))
         e.putString("rec", recents.value.joinToString(","))
         e.putString("off", offline.value.joinToString(";") { "${it.animeId},${it.ep},${it.sizeMb},${it.at}" })
         e.putString("art", savedArt.value.joinToString(","))
@@ -122,6 +125,12 @@ object Store {
         save()
     }
 
+    fun toggleFavEp(id: String, ep: Int) {
+        val k = "$id:$ep"
+        favEps.value = if (k in favEps.value) favEps.value - k else favEps.value + k
+        save()
+    }
+
     fun addRecent(q: String) {
         if (q.isBlank()) return
         recents.value = (listOf(q) + recents.value.filter { it != q }).take(12)
@@ -153,6 +162,7 @@ object Store {
     }
 
     fun pushChat(m: ChatMsg) { chat.value = chat.value + m }
+
     fun saveArt(id: String) {
         savedArt.value = savedArt.value + id
         save()
